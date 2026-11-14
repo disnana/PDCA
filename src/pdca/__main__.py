@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     be.add_argument("input")
     be.add_argument("--encoding", default="o200k_base")
     args = ap.parse_args(argv)
-    if args.command == "train":
+    if args.command == "optimize" and args.ai_provider == "gemini" and args.ai_model and args.ai_model.upper() in {"GEMINI_MODEL", "YOUR_AVAILABLE_GEMINI_MODEL"}:\n        ap.error("GEMINI_MODEL is a placeholder, not a real model ID. Try --ai-model gemini-3.8-flash or check https://ai.google.dev/gemini-api/docs/models")\n    if args.command == "train":
         profile = train(load_json(args.input), atoms=not args.no_atoms)
         save_json(args.output, profile)
     elif args.command == "encode":
