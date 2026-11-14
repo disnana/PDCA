@@ -40,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     op.add_argument("input"); op.add_argument("-o", "--output", required=True)
     op.add_argument("--profile-out", help="Optional location to save the profile")
     op.add_argument("--encoding", default="o200k_base")
+    op.add_argument("--candidate-profiles", nargs="+", metavar="FILE", help="Merge atom suggestions from saved PDCA profiles or packets without API calls")
     op.add_argument("--ai-provider", choices=("openai", "gemini"))
     op.add_argument("--ai-model", help="AI model identifier, e.g. gpt-6 or a Gemini model available in your API account")
     be = subs.add_parser("benchmark", help="Measure tokens in minified input and packet")
@@ -61,6 +62,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "optimize":
         data = load_json(args.input)
         candidates = []
+        for source in (args.candidate_profiles or []):
+            loaded = load_json(source)
+            p = loaded.get("profile", loaded)
+            if not isinstance(p, dict) or not isinstance(p.get("atoms"), list):
+                ap.error(f"Invalid candidate profile: {source}")
+            candidates.extend(p["atoms"])
         if args.ai_provider:
             if not args.ai_model:
                 ap.error("--ai-model required when --ai-provider is used")
