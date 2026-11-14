@@ -179,10 +179,28 @@ def validate_profile(profile: dict) -> None:
 
 
 def _pack_string(s: str, atoms: list[str]) -> str:
-    s = s.replace(MARK, MARK + MARK)
-    for i, atom in enumerate(atoms):
-        s = s.replace(atom, MARK + CODES[i])
-    return s
+    """Encode original characters once; never reprocess emitted atom codes.
+
+    At each position, the first matching atom in profile order wins.  This
+    keeps replacement deterministic even when atoms overlap.  A literal
+    marker is escaped as two markers, also without being scanned again.
+    """
+    out = []
+    offset = 0
+    while offset < len(s):
+        if s.startswith(MARK, offset):
+            out.append(MARK + MARK)
+            offset += len(MARK)
+            continue
+        for index, atom in enumerate(atoms):
+            if s.startswith(atom, offset):
+                out.append(MARK + CODES[index])
+                offset += len(atom)
+                break
+        else:
+            out.append(s[offset])
+            offset += 1
+    return "".join(out)
 
 
 def _unpack_string(s: str, atoms: list[str]) -> str:
