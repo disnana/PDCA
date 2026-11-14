@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdca-codec"
+version = "0.1.0a1"
+description = "Profile-driven, reversible JSON compression for LLM input"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Disnana"}]
+dependencies = []
+
+[project.optional-dependencies]
+tokenizer = ["tiktoken>=0.9"]
+openai = ["openai>=1.70"]
+gemini = ["google-genai>=1.0"]
+dev = ["pytest>=8", "tiktoken>=0.9"]
+
+[project.scripts]
+pdca = "pdca.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
