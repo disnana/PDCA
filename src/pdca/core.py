@@ -15,6 +15,9 @@ VERSION = 1
 MARK = "§"
 CODES = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 RESERVED = {"default", "missing", "extra", "literal"}
+DEFAULT_CODE = MARK + "="
+MISSING_CODE = MARK + "?"
+REF_CODE = MARK + "!"
 SCHEMA_MAX = 128
 ATOM_MAX = len(CODES)
 
@@ -62,10 +65,30 @@ def _build_schemas(data: Any) -> dict:
     return schemas
 
 
+def _build_constants(data: Any, schemas: dict) -> dict:
+    objects: dict[str, list[dict]] = defaultdict(list)
+    for path, val in walk(data):
+        if path in schemas and isinstance(val, dict):
+            objects[path].append(val)
+    result = {}
+    for path, entries in sorted(objects.items()):
+        if len(entries) < 3:
+            continue
+        constants = {}
+        for field in schemas[path]:
+            if all(field in record for record in entries):
+                base = canonical(entries[0][field])
+                if all(canonical(record[field]) == base for record in entries[1:]):
+                    constants[field] = entries[0][field]
+        if constants:
+            result[path] = constants
+    return result
+
+
 def _build_defaults(data: Any) -> dict:
     values: dict[str, list[Any]] = defaultdict(list)
     for path, val in walk(data):
-        if path.startswith("$[]") and isinstance(val, (dict, str, int, float, bool, type(None))):
+        if path.startswith("$[]") and path != "$[]" and isinstance(val, (list, dict, str, int, float, bool, type(None))):
             values[path].append(val)
     defaults = {}
     for path, items in sorted(values.items()):
@@ -73,7 +96,7 @@ def _build_defaults(data: Any) -> dict:
             continue
         counts = Counter(canonical(v) for v in items)
         candidate, n = counts.most_common(1)[0]
-        if n / len(items) >= 0.8 and len(candidate) >= 7:
+        if n / len(items) >= 0.8 and (len(candidate) >= 7 or candidate in ("[]", "{}", "null")):
             defaults[path] = json.loads(candidate)
     return defaults
 
@@ -92,13 +115,33 @@ def _candidate_atoms(data: Any) -> list[str]:
             occurrences = sum(s.count(text) for s in strings)
             if occurrences >= 2:
                 options.append((occurrences * (len(text) - 3) - len(text) - 8, text))
+    # Common URL prefixes and repeated column values are often much more
+    # efficient than full-string dictionary entries.
+    prefixes = Counter()
+    for string in strings:
+        if string.startswith("http"):
+            m = re.match(r"https?://[^/]+/[^/]+/", string)
+            if m:
+                prefixes[m.group()] += 1
+    for value, n in prefixes.items():
+        if n >= 2 and MARK not in value:
+            options.append((n * (len(value) - 3) - len(value) - 8, value))
     return [s for score, s in sorted(options, key=lambda v: (-v[0], v[1])) if score > 0][:ATOM_MAX]
 
 
 def train(data: Any, *, atoms: bool = True) -> dict:
     """Train an explicit reusable profile from representative JSON values."""
     # No code or selectors are generated; a profile is declarative data only.
-    profile = {"version": VERSION, "schemas": _build_schemas(data), "defaults": _build_defaults(data), "atoms": []}
+    schemas = _build_schemas(data)
+    constants = _build_constants(data, schemas)
+    defaults = _build_defaults(data)
+    for parent, fields in constants.items():
+        for field in fields:
+            defaults.pop(parent + "." + field, None)
+            for key in list(defaults):
+                if key.startswith(parent + "." + field + "."):
+                    del defaults[key]
+    profile = {"version": VERSION, "schemas": schemas, "defaults": defaults, "atoms": [], "field_refs": {"$[].specifications[].value": "model_number"} if "$[]" in schemas and "model_number" in schemas["$[]"] and "$[].specifications[]" in schemas else {}, "constants": constants}
     if atoms:
         profile["atoms"] = _candidate_atoms(data)
     validate_profile(profile)
@@ -106,7 +149,7 @@ def train(data: Any, *, atoms: bool = True) -> dict:
 
 
 def validate_profile(profile: dict) -> None:
-    if not isinstance(profile, dict) or set(profile) != {"version", "schemas", "defaults", "atoms"}:
+    if not isinstance(profile, dict) or not {"version", "schemas", "defaults", "atoms"}.issubset(profile) or set(profile) - {"version", "schemas", "defaults", "atoms", "field_refs", "constants"}:
         raise ValueError("Invalid PDCA profile keys")
     if profile["version"] != VERSION:
         raise ValueError("Unsupported PDCA profile version")
@@ -121,6 +164,16 @@ def validate_profile(profile: dict) -> None:
         raise ValueError("Invalid atoms")
     if len(set(profile["atoms"])) != len(profile["atoms"]) or not all(isinstance(s, str) and len(s) >= 1 and len(s) <= 500 and MARK not in s for s in profile["atoms"]):
         raise ValueError("Invalid atom values")
+    if not isinstance(profile.get("field_refs", {}), dict) or any(
+        not isinstance(k, str) or not isinstance(v, str) or not k.startswith("$[]")
+        or "." in v for k, v in profile.get("field_refs", {}).items()
+    ):
+        raise ValueError("Invalid field references")
+    if not isinstance(profile.get("constants", {}), dict):
+        raise ValueError("Invalid constants")
+    for path, values in profile.get("constants", {}).items():
+        if path not in profile["schemas"] or not isinstance(values, dict) or not set(values).issubset(profile["schemas"][path]):
+            raise ValueError("Invalid constant schema")
     if len(canonical(profile)) > 1_000_000:
         raise ValueError("Profile too large")
 
@@ -156,32 +209,42 @@ def _marker(value: Any) -> bool:
     return isinstance(value, dict) and isinstance(value.get("$pdca"), str) and value.get("$pdca") in RESERVED
 
 
-def _encode(value: Any, path: str, p: dict) -> Any:
+def _encode(value: Any, path: str, p: dict, record: dict | None = None) -> Any:
     if path in p["defaults"] and canonical(value) == canonical(p["defaults"][path]):
-        return {"$pdca": "default"}
+        return DEFAULT_CODE
     if path in p["schemas"] and not isinstance(value, dict):
         return {"$pdca": "literal", "value": value}
+    source_key = p.get("field_refs", {}).get(path)
+    if source_key and isinstance(value, str) and isinstance(record, dict) and isinstance(record.get(source_key), str):
+        source = record[source_key]
+        if source and value.startswith(source):
+            return REF_CODE + _pack_string(value[len(source):], p["atoms"])
     if _marker(value):
         # Escape marker-shaped user objects without recursively interpreting them.
         return {"$pdca": "literal", "value": value}
     if isinstance(value, str):
         return _pack_string(value, p["atoms"])
     if isinstance(value, list):
-        return [_encode(v, path + "[]", p) for v in value]
+        return [_encode(v, path + "[]", p, v if path == "$" and isinstance(v, dict) else record) for v in value]
     if isinstance(value, dict):
         schema = p["schemas"].get(path)
         if schema:
-            row = [_encode(value[k], path + "." + k, p) if k in value else {"$pdca": "missing"} for k in schema]
-            extras = {k: _encode(v, path + "." + k, p) for k, v in value.items() if k not in schema}
+            const = p.get("constants", {}).get(path, {})
+            active = [k for k in schema if k not in const]
+            row = [_encode(value[k], path + "." + k, p, record) if k in value else MISSING_CODE for k in active]
+            extras = {k: _encode(v, path + "." + k, p, record) for k, v in value.items() if k not in schema or (k in const and canonical(v) != canonical(const[k]))}
+            for k in const:
+                if k not in value:
+                    extras[k] = MISSING_CODE
             if extras:
                 row.append({"$pdca": "extra", "value": extras})
             return row
-        return {k: _encode(v, path + "." + k, p) for k, v in value.items()}
+        return {k: _encode(v, path + "." + k, p, record) for k, v in value.items()}
     return value
 
 
-def _decode(value: Any, path: str, p: dict) -> Any:
-    if isinstance(value, dict) and value.get("$pdca") == "default":
+def _decode(value: Any, path: str, p: dict, record: dict | None = None) -> Any:
+    if value == DEFAULT_CODE or (isinstance(value, dict) and value.get("$pdca") == "default"):
         if path not in p["defaults"]:
             raise ValueError("Unexpected default marker")
         return p["defaults"][path]
@@ -192,31 +255,41 @@ def _decode(value: Any, path: str, p: dict) -> Any:
     if isinstance(value, dict) and value.get("$pdca") == "extra":
         raise ValueError("Unexpected extra marker")
     if isinstance(value, str):
+        if value.startswith(REF_CODE) and path in p.get("field_refs", {}):
+            key = p["field_refs"][path]
+            if not isinstance(record, dict) or not isinstance(record.get(key), str):
+                raise ValueError("Invalid reference to " + key)
+            return record[key] + _unpack_string(value[len(REF_CODE):], p["atoms"])
         return _unpack_string(value, p["atoms"])
     if isinstance(value, list):
         keys = p["schemas"].get(path)
         if keys:
-            if len(value) not in (len(keys), len(keys) + 1):
+            const = p.get("constants", {}).get(path, {})
+            active = [k for k in keys if k not in const]
+            if len(value) not in (len(active), len(active) + 1):
                 raise ValueError("Invalid row length")
-            result = {}
-            for key, item in zip(keys, value):
-                if item == {"$pdca": "missing"}:
+            result = dict(const)
+            for key, item in zip(active, value):
+                if item == MISSING_CODE or item == {"$pdca": "missing"}:
                     continue
-                result[key] = _decode(item, path + "." + key, p)
-            if len(value) == len(keys) + 1:
+                result[key] = _decode(item, path + "." + key, p, result if path == "$[]" else record)
+            if len(value) == len(active) + 1:
                 extra = value[-1]
                 if not isinstance(extra, dict) or extra.get("$pdca") != "extra" or not isinstance(extra.get("value"), dict):
                     raise ValueError("Invalid extra fields")
                 for key, item in extra["value"].items():
-                    if key in result or key in keys:
+                    if key in active or (key in result and key not in const):
                         raise ValueError("Conflicting extra field")
-                    result[key] = _decode(item, path + "." + key, p)
+                    if key in const and (item == MISSING_CODE or item == {"$pdca": "missing"}):
+                        result.pop(key, None)
+                    else:
+                        result[key] = _decode(item, path + "." + key, p, result if path == "$[]" else record)
             return result
-        return [_decode(v, path + "[]", p) for v in value]
+        return [_decode(v, path + "[]", p, record) for v in value]
     if isinstance(value, dict):
         if path in p["schemas"]:
             raise ValueError("Expected encoded row at " + path)
-        return {k: _decode(v, path + "." + k, p) for k, v in value.items()}
+        return {k: _decode(v, path + "." + k, p, record) for k, v in value.items()}
     return value
 
 

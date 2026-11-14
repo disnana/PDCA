@@ -40,13 +40,14 @@ def main(argv: list[str] | None = None) -> int:
     op.add_argument("input"); op.add_argument("-o", "--output", required=True)
     op.add_argument("--profile-out", help="Optional location to save the profile")
     op.add_argument("--encoding", default="o200k_base")
+    op.add_argument("--candidate-profiles", nargs="+", metavar="FILE", help="Merge atom suggestions from saved PDCA profiles or packets without API calls")
     op.add_argument("--ai-provider", choices=("openai", "gemini"))
     op.add_argument("--ai-model", help="AI model identifier, e.g. gpt-6 or a Gemini model available in your API account")
     be = subs.add_parser("benchmark", help="Measure tokens in minified input and packet")
     be.add_argument("input")
     be.add_argument("--encoding", default="o200k_base")
     args = ap.parse_args(argv)
-    if args.command == "optimize" and args.ai_provider == "gemini" and args.ai_model and args.ai_model.upper() in {"GEMINI_MODEL", "YOUR_AVAILABLE_GEMINI_MODEL"}:\n        ap.error("GEMINI_MODEL is a placeholder, not a real model ID. Try --ai-model gemini-3.8-flash or check https://ai.google.dev/gemini-api/docs/models")\n    if args.command == "train":
+    if args.command == "train":
         profile = train(load_json(args.input), atoms=not args.no_atoms)
         save_json(args.output, profile)
     elif args.command == "encode":
@@ -61,6 +62,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "optimize":
         data = load_json(args.input)
         candidates = []
+        for source in (args.candidate_profiles or []):
+            loaded = load_json(source)
+            p = loaded.get("profile", loaded)
+            if not isinstance(p, dict) or not isinstance(p.get("atoms"), list):
+                ap.error(f"Invalid candidate profile: {source}")
+            candidates.extend(p["atoms"])
         if args.ai_provider:
             if not args.ai_model:
                 ap.error("--ai-model required when --ai-provider is used")

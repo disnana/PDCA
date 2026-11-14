@@ -1,7 +1,10 @@
-name: Tests
+name: Verify and release
+
 on:
   push:
+    branches: [main, "feat/**"]
   pull_request:
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -15,3 +18,24 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e '.[dev]'
       - run: python -m pytest -q
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade build
+      - run: python -m build
+      - name: Publish GitHub prerelease once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view v0.2.0-alpha >/dev/null 2>&1; then
+            gh release create v0.2.0-alpha dist/* --target "${GITHUB_SHA}" --title "PDCA v0.2.0-alpha" --notes "Experimental profile-driven reversible JSON codec. Includes Gemini/OpenAI candidate integration, benchmark and tests. See docs/benchmark-ja.md and README.md for limitations." --prerelease
+          fi
