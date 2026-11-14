@@ -24,10 +24,10 @@ pip install -e '.[tokenizer,openai,gemini]'
 export OPENAI_API_KEY=...
 pdca optimize products.json -o products.pdca.json --ai-provider openai --ai-model gpt-6
 # or export GEMINI_API_KEY=... and:
-pdca optimize products.json -o products.pdca.json --ai-provider gemini --ai-model YOUR_AVAILABLE_GEMINI_MODEL
+pdca optimize products.json -o products.pdca.json --ai-provider gemini --ai-model gemini-3.8-flash
 ```
 
-**GPT-6 support:** `--ai-model gpt-6` is an optional provider model identifier, not a guaranteed API entitlement. The fixed public tokenizer benchmark is OpenAI `o200k_base`, which is known to cover GPT-5.x. The current open-source `tiktoken` model map does not verify a GPT-6-specific tokenizer. We **do not claim** that the reference token count equals real GPT-6 usage. Future exact GPT-6 API token accounting belongs in a separate measurement.
+The Gemini model ID above is verified against Google's official model documentation. Replace it with another supported model ID only if your API project supports it. Never pass the literal placeholder `GEMINI_MODEL`. See https://ai.google.dev/gemini-api/docs/models.\n\n**GPT-6 support:** `--ai-model gpt-6` is an optional provider model identifier, not a guaranteed API entitlement. The fixed public tokenizer benchmark is OpenAI `o200k_base`, which is known to cover GPT-5.x. The current open-source `tiktoken` model map does not verify a GPT-6-specific tokenizer. We **do not claim** that the reference token count equals real GPT-6 usage. Future exact GPT-6 API token accounting belongs in a separate measurement.
 
 ## What is (and isn't) lossless?
 
